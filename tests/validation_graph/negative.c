@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-/* CSI-NN2 version 1.8.x */
+/* CSI-NN2 version 1.10.x */
 
 #include "test_utils.h"
 #include "csi_nn.h"
@@ -30,7 +30,7 @@ int main(int argc, char** argv)
 
     struct csi_tensor *reference = csi_alloc_tensor(NULL);
     int in_size = 1, out_size = 1;
-
+    enum csinn_dtype_enum test_dtype = CSINN_TEST_DTYPE;
     /* session configuration */
     struct csi_session *sess = csi_alloc_session();
     sess->base_api = CSINN_API;
@@ -50,16 +50,7 @@ int main(int argc, char** argv)
     float *input_data = (float *)(buffer + 1 + input->dim_count);
     input->data = input_data;
     get_quant_info(input);
-
-    void *src_tmp = malloc(in_size * sizeof(char));
-    for(int i = 0; i < in_size; i++) {
-        if (sess->base_dtype == CSINN_DTYPE_UINT8) {
-            *((uint8_t *)src_tmp + i) = csi_ref_quantize_f32_to_u8(input_data[i], input->qinfo);
-        } else if (sess->base_dtype == CSINN_DTYPE_INT8) {
-            *((int8_t *)src_tmp + i) = csi_ref_quantize_f32_to_i8(input_data[i], input->qinfo);
-        }
-    }
-
+    input->dtype = CSINN_DTYPE_FLOAT32;
 
     /* output tensor configuration */
     struct csi_tensor *output = csi_alloc_tensor(sess);
@@ -81,7 +72,8 @@ int main(int argc, char** argv)
     params.base.layout = CSINN_LAYOUT_NCHW;
     params.base.run_mode = CSINN_RM_NPU_GRAPH;
 
-
+    struct csi_tensor *input_tensor = convert_input(input, test_dtype);
+    input->dtype = sess->base_dtype;
     /* light: unsupport negative now*/
     if (csi_negative_init(input, output, &params) != CSINN_TRUE) {
         printf("negative init fail.\n\t");
@@ -96,13 +88,6 @@ int main(int argc, char** argv)
     csi_set_output(0, output, sess);
     csi_session_setup(sess);
 
-
-    struct csi_tensor *input_tensor = csi_alloc_tensor(NULL);
-    if (sess->base_dtype == CSINN_DTYPE_FLOAT32) {
-        input_tensor->data = input_data;
-    } else if (sess->base_dtype == CSINN_DTYPE_UINT8 || sess->base_dtype == CSINN_DTYPE_INT8) {
-        input_tensor->data = src_tmp;
-    }
     csi_update_input(0, input_tensor, sess);
     csi_session_run(sess);
 
@@ -119,8 +104,9 @@ int main(int argc, char** argv)
     float difference = argc > 2 ? atof(argv[2]) : 1e-4;
     if (sess->base_dtype == CSINN_DTYPE_UINT8 || sess->base_dtype == CSINN_DTYPE_INT8) {
         result_verify_8(reference->data, output_tensor, input->data, difference, out_size, false);
-    } else if (sess->base_dtype == CSINN_DTYPE_FLOAT32) {
-        result_verify_f32(reference->data, output_tensor->data, input->data, difference, out_size, false);
+    } else if (sess->base_dtype == CSINN_DTYPE_FLOAT32 && output_tensor->dtype == CSINN_DTYPE_INT8) {
+        struct csi_tensor *foutput = csi_ref_tensor_transform_f32(output_tensor);
+        result_verify_f32(reference->data, foutput->data, input->data, difference, out_size, false);
     }
 
     /* free alloced memory */
@@ -131,7 +117,6 @@ int main(int argc, char** argv)
     free(output_tensor);
     free(reference->qinfo);
     free(reference);
-    free(src_tmp);
 
     csi_session_deinit(sess);
     csi_free_session(sess);
